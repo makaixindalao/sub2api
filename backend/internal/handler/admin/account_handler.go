@@ -440,8 +440,16 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	}
 
 	var req TestAccountRequest
-	// Allow empty body, model_id is optional
-	_ = c.ShouldBindJSON(&req)
+	// Allow empty body, but reject malformed JSON
+	// 作者: mkx
+	// 变更: 区分空请求体和格式错误的 JSON，对格式错误返回 400
+	// 日期: 2025-02-05
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "Invalid JSON body: "+err.Error())
+			return
+		}
+	}
 
 	// Use AccountTestService to test the account with SSE streaming
 	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID); err != nil {
