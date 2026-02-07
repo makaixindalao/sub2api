@@ -9,7 +9,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const stickySessionPrefix = "sticky_session:"
+const (
+	stickySessionPrefix   = "sticky_session:"
+	gemini429CountPrefix  = "gemini:429:count:" // Gemini 429 计数 key 前缀 (作者：mkx, 日期：2026-02-03)
+)
 
 // Gemini Trie Lua 脚本
 const (
@@ -237,4 +240,50 @@ func (c *gatewayCache) SaveGeminiSession(ctx context.Context, groupID int64, pre
 	ttlSeconds := int(service.GeminiSessionTTL().Seconds())
 
 	return c.rdb.Eval(ctx, geminiTrieSaveScript, []string{trieKey}, digestChain, value, ttlSeconds).Err()
+}
+
+// buildGemini429CountKey 构建 Gemini 429 计数 key
+// 格式: gemini:429:count:{accountID}
+// (作者：mkx, 日期：2026-02-03)
+func buildGemini429CountKey(accountID int64) string {
+	return fmt.Sprintf("%s%d", gemini429CountPrefix, accountID)
+}
+
+// IncrGemini429Count 增加 Gemini 429 计数并返回当前窗口内的总次数。
+// 使用 Redis INCR 原子操作，首次设置时同时设置 TTL。
+// 用于渐进式限流策略：首次 429 假设分钟限流，多次触发后升级为每日限流。
+// (作者：mkx, 日期：2026-02-03)
+//
+// IncrGemini429Count increments Gemini 429 count and returns total hits in current window.
+// Uses Redis INCR atomic operation, sets TTL on first increment.
+// Used for progressive rate limiting: first 429 assumes minute limit, upgrades to daily after multiple hits.
+func (c *gatewayCache) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
+	key := buildGemini429CountKey(accountID)
+
+	// 使用 Lua 脚本实现原子性：INCR + 首次设置 TTL
+	// Lua script for atomic INCR + set TTL on first increment
+	script := redis.NewScript(`
+		local count = redis.call('INCR', KEYS[1])
+		if count == 1 then
+			redis.call('PEXPIRE', KEYS[1], ARGV[1])
+		end
+		return count
+	`)
+
+	result, err := script.Run(ctx, c.rdb, []string{key}, windowTTL.Milliseconds()).Int()
+	if err != nil {
+		return 0, err
+	}
+	return result, nil
+}
+
+// ClearGemini429Count 清除 Gemini 429 计数。
+// 当账户恢复正常调度或需要重置计数时调用。
+// (作者：mkx, 日期：2026-02-03)
+//
+// ClearGemini429Count clears the Gemini 429 count for an account.
+// Called when account recovers or count needs to be reset.
+func (c *gatewayCache) ClearGemini429Count(ctx context.Context, accountID int64) error {
+	key := buildGemini429CountKey(accountID)
+	return c.rdb.Del(ctx, key).Err()
 }

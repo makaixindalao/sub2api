@@ -313,6 +313,24 @@ type GatewayCache interface {
 	// SaveGeminiSession 保存 Gemini 会话
 	// Save Gemini session binding
 	SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error
+
+	// IncrGemini429Count 增加 Gemini 429 计数并返回当前窗口内的总次数。
+	// 用于渐进式限流：首次 429 假设分钟限流，多次后升级为每日限流。
+	// windowTTL 定义计数窗口的过期时间。
+	// (作者：mkx, 日期：2026-02-03)
+	//
+	// IncrGemini429Count increments Gemini 429 count and returns total hits in current window.
+	// Used for progressive rate limiting: first 429 assumes minute limit, upgrades to daily after multiple hits.
+	// windowTTL defines the expiration time for the counting window.
+	IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (count int, err error)
+
+	// ClearGemini429Count 清除 Gemini 429 计数。
+	// 当账户恢复正常或需要重置计数时调用。
+	// (作者：mkx, 日期：2026-02-03)
+	//
+	// ClearGemini429Count clears the Gemini 429 count for an account.
+	// Called when account recovers or count needs to be reset.
+	ClearGemini429Count(ctx context.Context, accountID int64) error
 }
 
 // derefGroupID safely dereferences *int64 to int64, returning 0 if nil

@@ -254,6 +254,100 @@ func (s *GatewayCacheSuite) TestGeminiSessionTrie_MultipleSessions() {
 	require.True(s.T(), found)
 	require.Equal(s.T(), "uuid-2", foundUUID)
 	require.Equal(s.T(), int64(2), foundAccountID)
+// TestIncrGemini429Count_FirstIncrement 测试首次增加 429 计数
+// (作者：mkx, 日期：2026-02-03)
+func (s *GatewayCacheSuite) TestIncrGemini429Count_FirstIncrement() {
+	accountID := int64(1001)
+	windowTTL := 1 * time.Minute
+
+	count, err := s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+	require.NoError(s.T(), err, "IncrGemini429Count")
+	require.Equal(s.T(), 1, count, "first increment should return 1")
+
+	// 验证 TTL 被设置
+	key := buildGemini429CountKey(accountID)
+	ttl, err := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), err, "TTL")
+	s.AssertTTLWithin(ttl, 5*time.Second, windowTTL)
+}
+
+// TestIncrGemini429Count_MultipleIncrements 测试多次增加 429 计数
+// (作者：mkx, 日期：2026-02-03)
+func (s *GatewayCacheSuite) TestIncrGemini429Count_MultipleIncrements() {
+	accountID := int64(1002)
+	windowTTL := 1 * time.Minute
+
+	// 连续增加 3 次
+	for i := 1; i <= 3; i++ {
+		count, err := s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+		require.NoError(s.T(), err, "IncrGemini429Count")
+		require.Equal(s.T(), i, count, "increment %d should return %d", i, i)
+	}
+}
+
+// TestIncrGemini429Count_TTLPreserved 测试后续增加不重置 TTL
+// (作者：mkx, 日期：2026-02-03)
+func (s *GatewayCacheSuite) TestIncrGemini429Count_TTLPreserved() {
+	accountID := int64(1003)
+	windowTTL := 1 * time.Minute
+
+	// 首次增加
+	_, err := s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+	require.NoError(s.T(), err, "first IncrGemini429Count")
+
+	key := buildGemini429CountKey(accountID)
+	ttl1, err := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), err, "TTL after first incr")
+
+	// 等待一小段时间后再次增加
+	time.Sleep(100 * time.Millisecond)
+
+	// 第二次增加（TTL 不应重置）
+	_, err = s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+	require.NoError(s.T(), err, "second IncrGemini429Count")
+
+	ttl2, err := s.rdb.TTL(s.ctx, key).Result()
+	require.NoError(s.T(), err, "TTL after second incr")
+
+	// TTL 应该减少（因为时间流逝），而不是重置
+	require.True(s.T(), ttl2 <= ttl1, "TTL should not increase after second increment")
+}
+
+// TestClearGemini429Count 测试清除 429 计数
+// (作者：mkx, 日期：2026-02-03)
+func (s *GatewayCacheSuite) TestClearGemini429Count() {
+	accountID := int64(1004)
+	windowTTL := 1 * time.Minute
+
+	// 先增加几次
+	for i := 0; i < 3; i++ {
+		_, err := s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+		require.NoError(s.T(), err)
+	}
+
+	// 清除
+	err := s.cache.ClearGemini429Count(s.ctx, accountID)
+	require.NoError(s.T(), err, "ClearGemini429Count")
+
+	// 验证 key 已删除
+	key := buildGemini429CountKey(accountID)
+	exists, err := s.rdb.Exists(s.ctx, key).Result()
+	require.NoError(s.T(), err, "Exists")
+	require.Equal(s.T(), int64(0), exists, "key should not exist after clear")
+
+	// 再次增加应该从 1 开始
+	count, err := s.cache.IncrGemini429Count(s.ctx, accountID, windowTTL)
+	require.NoError(s.T(), err, "IncrGemini429Count after clear")
+	require.Equal(s.T(), 1, count, "should start from 1 after clear")
+}
+
+// TestClearGemini429Count_MissingKey 测试清除不存在的 key
+// (作者：mkx, 日期：2026-02-03)
+func (s *GatewayCacheSuite) TestClearGemini429Count_MissingKey() {
+	accountID := int64(9999) // 从未使用过的 ID
+
+	err := s.cache.ClearGemini429Count(s.ctx, accountID)
+	require.NoError(s.T(), err, "ClearGemini429Count on missing key should not error")
 }
 
 func TestGatewayCacheSuite(t *testing.T) {

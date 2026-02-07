@@ -232,6 +232,18 @@ func (m *mockGatewayCacheForPlatform) SaveGeminiSession(ctx context.Context, gro
 	return nil
 }
 
+// IncrGemini429Count 增加 Gemini 429 计数（mock 实现，直接返回 1）
+// (作者：mkx, 日期：2026-02-03)
+func (m *mockGatewayCacheForPlatform) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
+	return 1, nil
+}
+
+// ClearGemini429Count 清除 Gemini 429 计数（mock 实现，无操作）
+// (作者：mkx, 日期：2026-02-03)
+func (m *mockGatewayCacheForPlatform) ClearGemini429Count(ctx context.Context, accountID int64) error {
+	return nil
+}
+
 type mockGroupRepoForGateway struct {
 	groups           map[int64]*Group
 	getByIDCalls     int

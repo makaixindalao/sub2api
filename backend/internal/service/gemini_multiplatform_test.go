@@ -281,6 +281,18 @@ func (m *mockGatewayCacheForGemini) SaveGeminiSession(ctx context.Context, group
 	return nil
 }
 
+// IncrGemini429Count 增加 Gemini 429 计数（mock 实现，直接返回 1）
+// (作者：mkx, 日期：2026-02-03)
+func (m *mockGatewayCacheForGemini) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
+	return 1, nil
+}
+
+// ClearGemini429Count 清除 Gemini 429 计数（mock 实现，无操作）
+// (作者：mkx, 日期：2026-02-03)
+func (m *mockGatewayCacheForGemini) ClearGemini429Count(ctx context.Context, accountID int64) error {
+	return nil
+}
+
 // TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform 测试 Gemini 单平台选择
 func TestGeminiMessagesCompatService_SelectAccountForModelWithExclusions_GeminiPlatform(t *testing.T) {
 	ctx := context.Background()
