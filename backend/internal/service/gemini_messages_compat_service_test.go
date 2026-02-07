@@ -2,8 +2,10 @@ package service
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestConvertClaudeToolsToGeminiTools_CustomType 测试custom类型工具转换
@@ -201,5 +203,187 @@ func TestEnsureGeminiFunctionCallThoughtSignatures_InsertsWhenMissing(t *testing
 	s := string(out)
 	if !strings.Contains(s, "\"thoughtSignature\":\""+geminiDummyThoughtSignature+"\"") {
 		t.Fatalf("expected injected thoughtSignature %q, got: %s", geminiDummyThoughtSignature, s)
+	}
+}
+
+func TestParseGeminiRateLimitResetTime_QuotaResetDelayFallback(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Rate limit exceeded","details":[{"metadata":{"quotaResetDelay":"45s"}}]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	delta := *ts - start
+	if delta < 43 || delta > 47 {
+		t.Fatalf("expected reset delta around 45s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_ParsesMillisecondsDuration 测试毫秒级 duration 能被解析并向上取整为秒级重置时间
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_ParsesMillisecondsDuration(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Rate limit exceeded","details":[{"metadata":{"quotaResetDelay":"373.801628ms"}}]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	// ceil(0.373...) = 1s，允许一定误差。
+	delta := *ts - start
+	if delta < 0 || delta > 2 {
+		t.Fatalf("expected reset delta around 1s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_RetryInfoRetryDelay 测试 RetryInfo.retryDelay 解析（优先级最高）
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_RetryInfoRetryDelay(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Rate limit exceeded","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0.847655010s"}]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	// ceil(0.847...) = 1s，考虑到秒级时间戳与执行耗时，允许一定误差。
+	delta := *ts - start
+	if delta < 0 || delta > 2 {
+		t.Fatalf("expected reset delta around 1s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_PleaseRetryInMessage 测试兼容 "Please retry in Xs" 形式
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_PleaseRetryInMessage(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Please retry in 30s"}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	delta := *ts - start
+	if delta < 28 || delta > 32 {
+		t.Fatalf("expected reset delta around 30s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_AfterSecondsInMessage 测试从 error.message 解析 “after Xs”
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_AfterSecondsInMessage(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Your quota will reset after 60s."}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	delta := *ts - start
+	if delta < 58 || delta > 62 {
+		t.Fatalf("expected reset delta around 60s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_WeirdDetailsElements 测试 details 包含非对象元素时仍能解析
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_WeirdDetailsElements(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Rate limit exceeded","details":["oops",{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2s"}]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	delta := *ts - start
+	if delta < 1 || delta > 3 {
+		t.Fatalf("expected reset delta around 2s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_PriorityOrder 测试解析优先级：RetryInfo > ErrorInfo.metadata.quotaResetDelay
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_PriorityOrder(t *testing.T) {
+	start := time.Now().Unix()
+	body := []byte(`{"error":{"message":"Rate limit exceeded","details":[` +
+		`{"@type":"type.googleapis.com/google.rpc.ErrorInfo","metadata":{"quotaResetDelay":"45s"}},` +
+		`{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"30s"}` +
+		`]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	// 若优先级正确，应取 30s 而不是 45s。
+	delta := *ts - start
+	if delta < 28 || delta > 32 {
+		t.Fatalf("expected reset delta around 30s, got %ds (resetAt=%d, start=%d)", delta, *ts, start)
+	}
+}
+
+func TestParseGeminiRateLimitResetTime_BackwardCompatible(t *testing.T) {
+	// Ensure the old function still works
+	body := []byte(`{"error":{"message":"Rate limit","details":[{"metadata":{"quotaResetDelay":"60s"}}]}}`)
+	ts := ParseGeminiRateLimitResetTime(body)
+	if ts == nil {
+		t.Fatal("expected non-nil timestamp")
+	}
+	// Should be approximately 60 seconds from now
+	expected := time.Now().Unix() + 60
+	diff := *ts - expected
+	if diff < -5 || diff > 5 {
+		t.Errorf("expected timestamp around %d, got %d", expected, *ts)
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_ZeroOrNegativeDurationReturnsNil 测试 0 或负数 duration 不应返回重置时间
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_ZeroOrNegativeDurationReturnsNil(t *testing.T) {
+	bodies := [][]byte{
+		[]byte(`{"error":{"message":"Rate limit exceeded","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0s"}]}}`),
+		[]byte(`{"error":{"message":"Rate limit exceeded","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"-1s"}]}}`),
+	}
+	for i, body := range bodies {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			ts := ParseGeminiRateLimitResetTime(body)
+			if ts != nil {
+				t.Fatalf("expected nil timestamp, got %v", *ts)
+			}
+		})
+	}
+}
+
+// TestParseGeminiRateLimitResetTime_ReturnsNilWhenNoMatch 测试无法解析重试延迟的情况
+// (作者：mkx, 日期：2026-02-05)
+func TestParseGeminiRateLimitResetTime_ReturnsNilWhenNoMatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    []byte
+		wantNil bool
+	}{
+		{
+			name:    "empty body",
+			body:    []byte(""),
+			wantNil: true,
+		},
+		{
+			name:    "invalid json",
+			body:    []byte("not json"),
+			wantNil: true,
+		},
+		{
+			name:    "no error field",
+			body:    []byte(`{"status": 429}`),
+			wantNil: true,
+		},
+		{
+			name:    "generic error message",
+			body:    []byte(`{"error":{"message":"Resource exhausted"}}`),
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.wantNil {
+				if ts := ParseGeminiRateLimitResetTime(tt.body); ts != nil {
+					t.Errorf("expected nil timestamp, got %v", *ts)
+				}
+			}
+		})
 	}
 }

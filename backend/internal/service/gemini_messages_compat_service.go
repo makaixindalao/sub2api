@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	mathrand "math/rand"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1465,6 +1465,8 @@ func sleepGeminiBackoff(attempt int) {
 var (
 	sensitiveQueryParamRegex = regexp.MustCompile(`(?i)([?&](?:key|client_secret|access_token|refresh_token)=)[^&"\s]+`)
 	retryInRegex             = regexp.MustCompile(`Please retry in ([0-9.]+)s`)
+	// geminiAfterSecondsRegex 解析错误信息里的 “after Xs” 形式重试提示。（作者：mkx, 日期：2026-02-04）
+	geminiAfterSecondsRegex = regexp.MustCompile(`after\s+(\d+)s\.?`)
 )
 
 func sanitizeUpstreamErrorMessage(msg string) string {
@@ -2600,102 +2602,138 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 		return
 	}
 
-	oauthType := account.GeminiOAuthType()
 	tierID := account.GeminiTierID()
-	projectID := strings.TrimSpace(account.GetCredential("project_id"))
-	isCodeAssist := account.IsGeminiCodeAssist()
 
-	resetAt := ParseGeminiRateLimitResetTime(body)
-	if resetAt == nil {
-		// 根据账号类型使用不同的默认重置时间
-		var ra time.Time
-		if isCodeAssist {
-			// Code Assist: fallback cooldown by tier
-			cooldown := geminiCooldownForTier(tierID)
-			if s.rateLimitService != nil {
-				cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
-			}
-			ra = time.Now().Add(cooldown)
-			log.Printf("[Gemini 429] Account %d (Code Assist, tier=%s, project=%s) rate limited, cooldown=%v", account.ID, tierID, projectID, time.Until(ra).Truncate(time.Second))
-		} else {
-			// API Key / AI Studio OAuth: PST 午夜
-			if ts := nextGeminiDailyResetUnix(); ts != nil {
-				ra = time.Unix(*ts, 0)
-				log.Printf("[Gemini 429] Account %d (API Key/AI Studio, type=%s) rate limited, reset at PST midnight (%v)", account.ID, account.Type, ra)
-			} else {
-				// 兜底：5 分钟
-				ra = time.Now().Add(5 * time.Minute)
-				log.Printf("[Gemini 429] Account %d rate limited, fallback to 5min", account.ID)
-			}
+	delay := parseGeminiRetryDelay(body)
+	if delay != nil {
+		now := time.Now()
+		resetAt := now.Add(*delay)
+		if resetAt.After(now) {
+			_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
+			log.Printf("[Gemini 429] Account %d rate limited, retry_delay=%v, reset_at=%v", account.ID, *delay, resetAt)
+			return
 		}
-		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
-		return
 	}
 
-	// 使用解析到的重置时间
-	resetTime := time.Unix(*resetAt, 0)
-	_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetTime)
-	log.Printf("[Gemini 429] Account %d rate limited until %v (oauth_type=%s, tier=%s)",
-		account.ID, resetTime, oauthType, tierID)
+	// 无法解析上游返回的 retry delay 时，按 tier 冷却时间兜底。（作者：mkx, 日期：2026-02-05）
+	cooldown := geminiCooldownForTier(tierID)
+	if s.rateLimitService != nil {
+		cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
+	}
+	resetAt := time.Now().Add(cooldown)
+	_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
+	log.Printf("[Gemini 429] Account %d rate limited (fallback), cooldown=%v, reset_at=%v (tier=%s)", account.ID, cooldown.Truncate(time.Second), resetAt, tierID)
 }
 
-// ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳
-func ParseGeminiRateLimitResetTime(body []byte) *int64 {
-	// Try to parse metadata.quotaResetDelay like "12.345s"
-	var parsed map[string]any
+// parseGeminiRetryDelay 解析 Gemini 429 响应中的重试延迟时间（作者：mkx, 日期：2026-02-05）
+func parseGeminiRetryDelay(body []byte) *time.Duration {
+	type errorPayload struct {
+		Error struct {
+			Message string `json:"message"`
+			Details []any  `json:"details"`
+		} `json:"error"`
+	}
+
+	var parsed errorPayload
 	if err := json.Unmarshal(body, &parsed); err == nil {
-		if errObj, ok := parsed["error"].(map[string]any); ok {
-			if msg, ok := errObj["message"].(string); ok {
-				if looksLikeGeminiDailyQuota(msg) {
-					if ts := nextGeminiDailyResetUnix(); ts != nil {
-						return ts
-					}
+		// 1) RetryInfo.retryDelay（最高优先级）
+		for _, item := range parsed.Error.Details {
+			d, _ := item.(map[string]any)
+			if d == nil {
+				continue
+			}
+			typeVal, _ := d["@type"].(string)
+			if typeVal != "type.googleapis.com/google.rpc.RetryInfo" {
+				continue
+			}
+			retryDelay, _ := d["retryDelay"].(string)
+			if retryDelay == "" {
+				continue
+			}
+			if dur, err := time.ParseDuration(retryDelay); err == nil {
+				return &dur
+			}
+		}
+
+		// 2) ErrorInfo.metadata.quotaResetDelay（兼容缺少 @type 的旧格式）
+		for _, item := range parsed.Error.Details {
+			d, _ := item.(map[string]any)
+			if d == nil {
+				continue
+			}
+			if typeVal, ok := d["@type"].(string); ok && typeVal != "" && typeVal != "type.googleapis.com/google.rpc.ErrorInfo" {
+				continue
+			}
+			meta, _ := d["metadata"].(map[string]any)
+			if meta == nil {
+				continue
+			}
+			quotaResetDelay, _ := meta["quotaResetDelay"].(string)
+			if quotaResetDelay == "" {
+				continue
+			}
+			if dur, err := time.ParseDuration(quotaResetDelay); err == nil {
+				return &dur
+			}
+		}
+
+		// 3) error.message "after Xs"
+		if msg := strings.TrimSpace(parsed.Error.Message); msg != "" {
+			lower := strings.ToLower(msg)
+			if matches := geminiAfterSecondsRegex.FindStringSubmatch(lower); len(matches) == 2 {
+				if seconds, err := strconv.Atoi(matches[1]); err == nil {
+					dur := time.Duration(seconds) * time.Second
+					return &dur
 				}
 			}
-			if details, ok := errObj["details"].([]any); ok {
-				for _, d := range details {
-					dm, ok := d.(map[string]any)
-					if !ok {
-						continue
-					}
-					if meta, ok := dm["metadata"].(map[string]any); ok {
-						if v, ok := meta["quotaResetDelay"].(string); ok {
-							if dur, err := time.ParseDuration(v); err == nil {
-								// Use ceil to avoid undercounting fractional seconds (e.g. 10.1s should not become 10s),
-								// which can affect scheduling decisions around thresholds (like 10s).
-								ts := time.Now().Unix() + int64(math.Ceil(dur.Seconds()))
-								return &ts
-							}
-						}
-					}
+
+			// 额外兜底：兼容 "Please retry in Xs" 形式。（作者：mkx, 日期：2026-02-05）
+			if matches := retryInRegex.FindStringSubmatch(msg); len(matches) == 2 {
+				if dur, err := time.ParseDuration(matches[1] + "s"); err == nil {
+					return &dur
 				}
 			}
 		}
 	}
 
-	// Match "Please retry in Xs"
-	matches := retryInRegex.FindStringSubmatch(string(body))
-	if len(matches) == 2 {
+	// JSON 不可解析时，兜底从原始文本中提取 "after Xs"。（作者：mkx, 日期：2026-02-05）
+	lower := strings.ToLower(string(body))
+	if matches := geminiAfterSecondsRegex.FindStringSubmatch(lower); len(matches) == 2 {
+		if seconds, err := strconv.Atoi(matches[1]); err == nil {
+			dur := time.Duration(seconds) * time.Second
+			return &dur
+		}
+	}
+	// 额外兜底：兼容 "Please retry in Xs" 形式。（作者：mkx, 日期：2026-02-05）
+	if matches := retryInRegex.FindStringSubmatch(string(body)); len(matches) == 2 {
 		if dur, err := time.ParseDuration(matches[1] + "s"); err == nil {
-			ts := time.Now().Unix() + int64(math.Ceil(dur.Seconds()))
-			return &ts
+			return &dur
 		}
 	}
-
 	return nil
 }
 
-func looksLikeGeminiDailyQuota(message string) bool {
-	m := strings.ToLower(message)
-	if strings.Contains(m, "per day") || strings.Contains(m, "requests per day") || strings.Contains(m, "quota") && strings.Contains(m, "per day") {
-		return true
+// ParseGeminiRateLimitResetTime parses Gemini 429 response and returns reset time
+// Kept for backward compatibility
+//
+// ParseGeminiRateLimitResetTime 保持向后兼容：仅返回重置时间的 Unix 时间戳。（作者：mkx）
+func ParseGeminiRateLimitResetTime(body []byte) *int64 {
+	delay := parseGeminiRetryDelay(body)
+	if delay == nil {
+		return nil
 	}
-	return false
-}
 
-func nextGeminiDailyResetUnix() *int64 {
-	reset := geminiDailyResetTime(time.Now())
-	ts := reset.Unix()
+	now := time.Now()
+	resetAt := now.Add(*delay)
+	if !resetAt.After(now) {
+		return nil
+	}
+
+	// Unix 时间戳只能精确到秒；为了避免因为向下取整导致 reset_at 早于实际值，这里强制向上取整。（作者：mkx, 日期：2026-02-05）
+	ts := resetAt.Unix()
+	if time.Unix(ts, 0).Before(resetAt) {
+		ts++
+	}
 	return &ts
 }
 

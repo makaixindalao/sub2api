@@ -373,7 +373,7 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 				return
 			}
 		case PlatformGemini, PlatformAntigravity:
-			// 尝试解析 Gemini 格式（用于其他平台）
+			// 尝试解析 Gemini 429 响应体里的重试延迟时间（作者：mkx）
 			if resetAt := ParseGeminiRateLimitResetTime(responseBody); resetAt != nil {
 				resetTime := time.Unix(*resetAt, 0)
 				if err := s.accountRepo.SetRateLimited(ctx, account.ID, resetTime); err != nil {
