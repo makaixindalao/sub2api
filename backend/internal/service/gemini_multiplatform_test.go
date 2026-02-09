@@ -133,9 +133,6 @@ func (m *mockAccountRepoForGemini) ListSchedulableByGroupIDAndPlatforms(ctx cont
 func (m *mockAccountRepoForGemini) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	return nil
 }
-func (m *mockAccountRepoForGemini) SetAntigravityQuotaScopeLimit(ctx context.Context, id int64, scope AntigravityQuotaScope, resetAt time.Time) error {
-	return nil
-}
 func (m *mockAccountRepoForGemini) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time) error {
 	return nil
 }
@@ -226,6 +223,10 @@ func (m *mockGroupRepoForGemini) GetAccountIDsByGroupIDs(ctx context.Context, gr
 	return nil, nil
 }
 
+func (m *mockGroupRepoForGemini) UpdateSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
+	return nil
+}
+
 var _ GroupRepository = (*mockGroupRepoForGemini)(nil)
 
 // mockGatewayCacheForGemini Gemini 测试用的 cache mock
@@ -262,34 +263,6 @@ func (m *mockGatewayCacheForGemini) DeleteSessionAccountID(ctx context.Context, 
 	}
 	m.deletedSessions[sessionHash]++
 	delete(m.sessionBindings, sessionHash)
-	return nil
-}
-
-func (m *mockGatewayCacheForGemini) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
-	return 0, nil
-}
-
-func (m *mockGatewayCacheForGemini) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
-	return nil, nil
-}
-
-func (m *mockGatewayCacheForGemini) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
-	return "", 0, false
-}
-
-func (m *mockGatewayCacheForGemini) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
-	return nil
-}
-
-// IncrGemini429Count 增加 Gemini 429 计数（mock 实现，直接返回 1）
-// (作者：mkx, 日期：2026-02-03)
-func (m *mockGatewayCacheForGemini) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
-	return 1, nil
-}
-
-// ClearGemini429Count 清除 Gemini 429 计数（mock 实现，无操作）
-// (作者：mkx, 日期：2026-02-03)
-func (m *mockGatewayCacheForGemini) ClearGemini429Count(ctx context.Context, accountID int64) error {
 	return nil
 }
 

@@ -204,34 +204,6 @@ func (c *stubGatewayCache) DeleteSessionAccountID(ctx context.Context, groupID i
 	return nil
 }
 
-func (c *stubGatewayCache) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
-	return 0, nil
-}
-
-func (c *stubGatewayCache) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
-	return nil, nil
-}
-
-func (c *stubGatewayCache) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
-	return "", 0, false
-}
-
-func (c *stubGatewayCache) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
-	return nil
-}
-
-// IncrGemini429Count 增加 Gemini 429 计数（mock 实现，直接返回 1）
-// (作者：mkx, 日期：2026-02-03)
-func (c *stubGatewayCache) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
-	return 1, nil
-}
-
-// ClearGemini429Count 清除 Gemini 429 计数（mock 实现，无操作）
-// (作者：mkx, 日期：2026-02-03)
-func (c *stubGatewayCache) ClearGemini429Count(ctx context.Context, accountID int64) error {
-	return nil
-}
-
 func TestOpenAISelectAccountWithLoadAwareness_FiltersUnschedulable(t *testing.T) {
 	now := time.Now()
 	resetAt := now.Add(10 * time.Minute)

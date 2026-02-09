@@ -896,6 +896,10 @@ func (stubGroupRepo) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int
 	return nil, errors.New("not implemented")
 }
 
+func (stubGroupRepo) UpdateSortOrders(ctx context.Context, updates []service.GroupSortOrderUpdate) error {
+	return nil
+}
+
 type stubAccountRepo struct {
 	bulkUpdateIDs []int64
 }
@@ -1001,10 +1005,6 @@ func (s *stubAccountRepo) ListSchedulableByGroupIDAndPlatforms(ctx context.Conte
 }
 
 func (s *stubAccountRepo) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
-	return errors.New("not implemented")
-}
-
-func (s *stubAccountRepo) SetAntigravityQuotaScopeLimit(ctx context.Context, id int64, scope service.AntigravityQuotaScope, resetAt time.Time) error {
 	return errors.New("not implemented")
 }
 

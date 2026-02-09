@@ -142,9 +142,6 @@ func (m *mockAccountRepoForPlatform) ListSchedulableByGroupIDAndPlatforms(ctx co
 func (m *mockAccountRepoForPlatform) SetRateLimited(ctx context.Context, id int64, resetAt time.Time) error {
 	return nil
 }
-func (m *mockAccountRepoForPlatform) SetAntigravityQuotaScopeLimit(ctx context.Context, id int64, scope AntigravityQuotaScope, resetAt time.Time) error {
-	return nil
-}
 func (m *mockAccountRepoForPlatform) SetModelRateLimit(ctx context.Context, id int64, scope string, resetAt time.Time) error {
 	return nil
 }
@@ -216,34 +213,6 @@ func (m *mockGatewayCacheForPlatform) DeleteSessionAccountID(ctx context.Context
 	return nil
 }
 
-func (m *mockGatewayCacheForPlatform) IncrModelCallCount(ctx context.Context, accountID int64, model string) (int64, error) {
-	return 0, nil
-}
-
-func (m *mockGatewayCacheForPlatform) GetModelLoadBatch(ctx context.Context, accountIDs []int64, model string) (map[int64]*ModelLoadInfo, error) {
-	return nil, nil
-}
-
-func (m *mockGatewayCacheForPlatform) FindGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain string) (uuid string, accountID int64, found bool) {
-	return "", 0, false
-}
-
-func (m *mockGatewayCacheForPlatform) SaveGeminiSession(ctx context.Context, groupID int64, prefixHash, digestChain, uuid string, accountID int64) error {
-	return nil
-}
-
-// IncrGemini429Count 增加 Gemini 429 计数（mock 实现，直接返回 1）
-// (作者：mkx, 日期：2026-02-03)
-func (m *mockGatewayCacheForPlatform) IncrGemini429Count(ctx context.Context, accountID int64, windowTTL time.Duration) (int, error) {
-	return 1, nil
-}
-
-// ClearGemini429Count 清除 Gemini 429 计数（mock 实现，无操作）
-// (作者：mkx, 日期：2026-02-03)
-func (m *mockGatewayCacheForPlatform) ClearGemini429Count(ctx context.Context, accountID int64) error {
-	return nil
-}
-
 type mockGroupRepoForGateway struct {
 	groups           map[int64]*Group
 	getByIDCalls     int
@@ -300,6 +269,10 @@ func (m *mockGroupRepoForGateway) BindAccountsToGroup(ctx context.Context, group
 
 func (m *mockGroupRepoForGateway) GetAccountIDsByGroupIDs(ctx context.Context, groupIDs []int64) ([]int64, error) {
 	return nil, nil
+}
+
+func (m *mockGroupRepoForGateway) UpdateSortOrders(ctx context.Context, updates []GroupSortOrderUpdate) error {
+	return nil
 }
 
 func ptr[T any](v T) *T {
