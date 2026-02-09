@@ -198,8 +198,7 @@ type modelInfo struct {
 
 // modelInfoMap 模型前缀 → 模型信息映射
 // 只有在此映射表中的模型才会注入身份提示词
-// 注意：当前 claude-opus-4-6 会被映射到 claude-opus-4-5-thinking，
-// 但保留此条目以便后续 Antigravity 上游支持 4.6 时快速切换
+// 注意：当前 claude-opus-4-6 会被映射到 claude-opus-4-5-thinking
 var modelInfoMap = map[string]modelInfo{
 	"claude-opus-4-5":   {DisplayName: "Claude Opus 4.5", CanonicalID: "claude-opus-4-5-20250929"},
 	"claude-opus-4-6":   {DisplayName: "Claude Opus 4.6", CanonicalID: "claude-opus-4-6"},

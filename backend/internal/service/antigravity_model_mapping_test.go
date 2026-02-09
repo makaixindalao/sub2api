@@ -39,22 +39,22 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 
 		// 2. 默认映射（DefaultAntigravityModelMapping）
 		{
-			name:           "默认映射 - claude-opus-4-6 → claude-opus-4-6-thinking",
+			name:           "默认映射 - claude-opus-4-6 → claude-opus-4-5-thinking",
 			requestedModel: "claude-opus-4-6",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-thinking",
 		},
 		{
-			name:           "默认映射 - claude-opus-4-5-20251101 → claude-opus-4-6-thinking",
+			name:           "默认映射 - claude-opus-4-5-20251101 → claude-opus-4-5-thinking",
 			requestedModel: "claude-opus-4-5-20251101",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-thinking",
 		},
 		{
-			name:           "默认映射 - claude-opus-4-5-thinking → claude-opus-4-6-thinking",
+			name:           "默认映射 - claude-opus-4-5-thinking → claude-opus-4-5-thinking",
 			requestedModel: "claude-opus-4-5-thinking",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-thinking",
 		},
 		{
 			name:           "默认映射 - claude-haiku-4-5 → claude-sonnet-4-5",
@@ -83,10 +83,10 @@ func TestAntigravityGatewayService_GetMappedModel(t *testing.T) {
 			expected:       "claude-sonnet-4-5",
 		},
 		{
-			name:           "默认映射透传 - claude-opus-4-6-thinking",
+			name:           "默认映射 - claude-opus-4-6-thinking → claude-opus-4-5-thinking",
 			requestedModel: "claude-opus-4-6-thinking",
 			accountMapping: nil,
-			expected:       "claude-opus-4-6-thinking",
+			expected:       "claude-opus-4-5-thinking",
 		},
 		{
 			name:           "默认映射透传 - claude-sonnet-4-5-thinking",

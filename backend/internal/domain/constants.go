@@ -70,13 +70,13 @@ const (
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
 	// Claude 白名单
-	"claude-opus-4-6-thinking":   "claude-opus-4-6-thinking", // 官方模型
-	"claude-opus-4-6":            "claude-opus-4-6-thinking", // 简称映射
-	"claude-opus-4-5-thinking":   "claude-opus-4-6-thinking", // 迁移旧模型
+	"claude-opus-4-5-thinking":   "claude-opus-4-5-thinking", // 官方模型
+	"claude-opus-4-6-thinking":   "claude-opus-4-5-thinking", // 4.6 降级到 4.5
+	"claude-opus-4-6":            "claude-opus-4-5-thinking", // 4.6 降级到 4.5
 	"claude-sonnet-4-5":          "claude-sonnet-4-5",
 	"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
 	// Claude 详细版本 ID 映射
-	"claude-opus-4-5-20251101":   "claude-opus-4-6-thinking", // 迁移旧模型
+	"claude-opus-4-5-20251101":   "claude-opus-4-5-thinking",
 	"claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
 	// Claude Haiku → Sonnet（无 Haiku 支持）
 	"claude-haiku-4-5":          "claude-sonnet-4-5",
