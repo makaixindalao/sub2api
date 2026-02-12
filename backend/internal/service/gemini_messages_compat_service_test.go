@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestConvertClaudeToolsToGeminiTools_CustomType 测试custom类型工具转换
@@ -266,7 +268,7 @@ func TestParseGeminiRateLimitResetTime_PleaseRetryInMessage(t *testing.T) {
 	}
 }
 
-// TestParseGeminiRateLimitResetTime_AfterSecondsInMessage 测试从 error.message 解析 “after Xs”
+// TestParseGeminiRateLimitResetTime_AfterSecondsInMessage 测试从 error.message 解析 "after Xs"
 // (作者：mkx, 日期：2026-02-05)
 func TestParseGeminiRateLimitResetTime_AfterSecondsInMessage(t *testing.T) {
 	start := time.Now().Unix()
@@ -384,6 +386,73 @@ func TestParseGeminiRateLimitResetTime_ReturnsNilWhenNoMatch(t *testing.T) {
 					t.Errorf("expected nil timestamp, got %v", *ts)
 				}
 			}
+		})
+	}
+}
+
+func TestExtractGeminiUsage_ThoughtsTokenCount(t *testing.T) {
+	tests := []struct {
+		name          string
+		resp          map[string]any
+		wantInput     int
+		wantOutput    int
+		wantCacheRead int
+		wantNil       bool
+	}{
+		{
+			name: "with thoughtsTokenCount",
+			resp: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":     float64(100),
+					"candidatesTokenCount": float64(20),
+					"thoughtsTokenCount":   float64(50),
+				},
+			},
+			wantInput:  100,
+			wantOutput: 70,
+		},
+		{
+			name: "with thoughtsTokenCount and cache",
+			resp: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":        float64(100),
+					"candidatesTokenCount":    float64(20),
+					"cachedContentTokenCount": float64(30),
+					"thoughtsTokenCount":      float64(50),
+				},
+			},
+			wantInput:     70,
+			wantOutput:    70,
+			wantCacheRead: 30,
+		},
+		{
+			name: "without thoughtsTokenCount (old model)",
+			resp: map[string]any{
+				"usageMetadata": map[string]any{
+					"promptTokenCount":     float64(100),
+					"candidatesTokenCount": float64(20),
+				},
+			},
+			wantInput:  100,
+			wantOutput: 20,
+		},
+		{
+			name:    "no usageMetadata",
+			resp:    map[string]any{},
+			wantNil: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usage := extractGeminiUsage(tt.resp)
+			if tt.wantNil {
+				require.Nil(t, usage)
+				return
+			}
+			require.NotNil(t, usage)
+			require.Equal(t, tt.wantInput, usage.InputTokens)
+			require.Equal(t, tt.wantOutput, usage.OutputTokens)
+			require.Equal(t, tt.wantCacheRead, usage.CacheReadInputTokens)
 		})
 	}
 }
