@@ -95,6 +95,8 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3-flash-preview":     "gemini-3-flash",
 	"gemini-3-pro-preview":       "gemini-3-pro-high",
 	"gemini-3-pro-image-preview": "gemini-3-pro-image",
+	// Gemini 3.1 白名单（2026-02-21 by mkx: 对标 CLIProxyAPI 的 Gemini CLI v1internal 路由）
+	"gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
 	// 其他官方模型
 	"gpt-oss-120b-medium":    "gpt-oss-120b-medium",
 	"tab_flash_lite_preview": "tab_flash_lite_preview",

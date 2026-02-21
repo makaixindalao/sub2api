@@ -154,6 +154,8 @@ var claudeModels = []modelDef{
 }
 
 // Antigravity 支持的 Gemini 模型
+// 作者: mkx
+// 变更: 新增 gemini-3.1-pro-preview 支持（2026-02-21）
 var geminiModels = []modelDef{
 	{ID: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash", CreatedAt: "2025-01-01T00:00:00Z"},
 	{ID: "gemini-2.5-flash-lite", DisplayName: "Gemini 2.5 Flash Lite", CreatedAt: "2025-01-01T00:00:00Z"},
@@ -163,6 +165,7 @@ var geminiModels = []modelDef{
 	{ID: "gemini-3-pro-high", DisplayName: "Gemini 3 Pro High", CreatedAt: "2025-06-01T00:00:00Z"},
 	{ID: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro Preview", CreatedAt: "2025-06-01T00:00:00Z"},
 	{ID: "gemini-3-pro-image", DisplayName: "Gemini 3 Pro Image", CreatedAt: "2025-06-01T00:00:00Z"},
+	{ID: "gemini-3.1-pro-preview", DisplayName: "Gemini 3.1 Pro Preview", CreatedAt: "2026-02-01T00:00:00Z"},
 }
 
 // ========== Claude API 格式 (/v1/models) ==========
