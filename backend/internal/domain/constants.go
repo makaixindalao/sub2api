@@ -22,6 +22,7 @@ const (
 	PlatformOpenAI      = "openai"
 	PlatformGemini      = "gemini"
 	PlatformAntigravity = "antigravity"
+	PlatformSora        = "sora"
 )
 
 // Account type constants
@@ -70,9 +71,10 @@ const (
 // 与前端 useModelWhitelist.ts 中的 antigravityDefaultMappings 保持一致
 var DefaultAntigravityModelMapping = map[string]string{
 	// Claude 白名单
-	"claude-opus-4-5-thinking":   "claude-opus-4-5-thinking", // 官方模型
-	"claude-opus-4-6-thinking":   "claude-opus-4-5-thinking", // 4.6 降级到 4.5
-	"claude-opus-4-6":            "claude-opus-4-5-thinking", // 4.6 降级到 4.5
+	"claude-opus-4-6-thinking":   "claude-opus-4-6-thinking", // 官方模型
+	"claude-opus-4-6":            "claude-opus-4-6-thinking", // 简称映射
+	"claude-opus-4-5-thinking":   "claude-opus-4-6-thinking", // 迁移旧模型
+	"claude-sonnet-4-6":          "claude-sonnet-4-6",
 	"claude-sonnet-4-5":          "claude-sonnet-4-5",
 	"claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
 	// Claude 详细版本 ID 映射
@@ -95,6 +97,11 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-3-flash-preview":     "gemini-3-flash",
 	"gemini-3-pro-preview":       "gemini-3-pro-high",
 	"gemini-3-pro-image-preview": "gemini-3-pro-image",
+	// Gemini 3.1 白名单
+	"gemini-3.1-pro-high": "gemini-3.1-pro-high",
+	"gemini-3.1-pro-low":  "gemini-3.1-pro-low",
+	// Gemini 3.1 preview 映射
+	"gemini-3.1-pro-preview": "gemini-3.1-pro-high",
 	// 其他官方模型
 	"gpt-oss-120b-medium":    "gpt-oss-120b-medium",
 	"tab_flash_lite_preview": "tab_flash_lite_preview",

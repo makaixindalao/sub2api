@@ -126,7 +126,6 @@ AGENTS.md
 scripts
 .code-review-state
 openspec/
-docs/
 code-reviews/
 AGENTS.md
 backend/cmd/server/server
@@ -135,3 +134,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 docs/*
 .serena/
+.codex/
+frontend/coverage/
+aicodex
+
