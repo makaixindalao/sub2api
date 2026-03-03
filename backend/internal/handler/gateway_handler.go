@@ -41,6 +41,7 @@ type GatewayHandler struct {
 	concurrencyHelper         *ConcurrencyHelper
 	maxAccountSwitches        int
 	maxAccountSwitchesGemini  int
+	geminiRetryBudget         time.Duration
 	cfg                       *config.Config
 }
 
@@ -61,6 +62,7 @@ func NewGatewayHandler(
 	pingInterval := time.Duration(0)
 	maxAccountSwitches := 10
 	maxAccountSwitchesGemini := 3
+	geminiRetryBudget := 5 * time.Second // 与 viper 默认值一致
 	if cfg != nil {
 		pingInterval = time.Duration(cfg.Concurrency.PingInterval) * time.Second
 		if cfg.Gateway.MaxAccountSwitches > 0 {
@@ -68,6 +70,9 @@ func NewGatewayHandler(
 		}
 		if cfg.Gateway.MaxAccountSwitchesGemini > 0 {
 			maxAccountSwitchesGemini = cfg.Gateway.MaxAccountSwitchesGemini
+		}
+		if cfg.Gateway.GeminiRetryBudgetSeconds > 0 {
+			geminiRetryBudget = time.Duration(cfg.Gateway.GeminiRetryBudgetSeconds) * time.Second
 		}
 	}
 	return &GatewayHandler{
@@ -83,6 +88,7 @@ func NewGatewayHandler(
 		concurrencyHelper:         NewConcurrencyHelper(concurrencyService, SSEPingFormatClaude, pingInterval),
 		maxAccountSwitches:        maxAccountSwitches,
 		maxAccountSwitchesGemini:  maxAccountSwitchesGemini,
+		geminiRetryBudget:         geminiRetryBudget,
 		cfg:                       cfg,
 	}
 }
@@ -256,7 +262,12 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 
 	if platform == service.PlatformGemini {
-		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+		// 注入 Gemini sleep 预算，限制整个请求链路的累计 sleep 时间
+		// 作者: mkx | 日期: 2026-03-03
+		budget := service.NewSleepBudget(h.geminiRetryBudget)
+		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession, budget)
+		ctx := context.WithValue(c.Request.Context(), ctxkey.GeminiSleepBudget, budget)
+		c.Request = c.Request.WithContext(ctx)
 
 		// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 		// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
@@ -444,7 +455,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	for {
-		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession, nil)
 		retryWithFallback := false
 
 		for {

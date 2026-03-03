@@ -47,15 +47,21 @@ type FailoverState struct {
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
 	hasBoundSession       bool
+	// Budget 可选的 sleep 预算。非 nil 时，所有 sleep 操作走预算扣减；
+	// nil 时退化为原 sleepWithContext 行为（兼容非 Gemini 平台）。
+	// 作者: mkx | 日期: 2026-03-03
+	Budget *service.SleepBudget
 }
 
-// NewFailoverState 创建 failover 状态
-func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
+// NewFailoverState 创建 failover 状态。budget 可传 nil（非 Gemini 平台）。
+// 作者: mkx | 变更: 新增 budget 参数 | 日期: 2026-03-03
+func NewFailoverState(maxSwitches int, hasBoundSession bool, budget *service.SleepBudget) *FailoverState {
 	return &FailoverState{
 		MaxSwitches:           maxSwitches,
 		FailedAccountIDs:      make(map[int64]struct{}),
 		SameAccountRetryCount: make(map[int64]int),
 		hasBoundSession:       hasBoundSession,
+		Budget:                budget,
 	}
 }
 
@@ -80,8 +86,13 @@ func (s *FailoverState) HandleFailoverError(
 		s.SameAccountRetryCount[accountID]++
 		log.Printf("Account %d: retryable error %d, same-account retry %d/%d",
 			accountID, failoverErr.StatusCode, s.SameAccountRetryCount[accountID], maxSameAccountRetries)
-		if !sleepWithContext(ctx, sameAccountRetryDelay) {
-			return FailoverCanceled
+		if !s.trySleep(ctx, sameAccountRetryDelay) {
+			// 区分 ctx 取消（客户端断开）与预算耗尽
+			// 作者: mkx | 日期: 2026-03-03
+			if ctx.Err() != nil {
+				return FailoverCanceled
+			}
+			return FailoverExhausted
 		}
 		return FailoverContinue
 	}
@@ -107,8 +118,13 @@ func (s *FailoverState) HandleFailoverError(
 	// Antigravity 平台换号线性递增延时
 	if platform == service.PlatformAntigravity {
 		delay := time.Duration(s.SwitchCount-1) * time.Second
-		if !sleepWithContext(ctx, delay) {
-			return FailoverCanceled
+		if !s.trySleep(ctx, delay) {
+			// 区分 ctx 取消（客户端断开）与预算耗尽
+			// 作者: mkx | 日期: 2026-03-03
+			if ctx.Err() != nil {
+				return FailoverCanceled
+			}
+			return FailoverExhausted
 		}
 	}
 
@@ -129,8 +145,13 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 
 		log.Printf("Antigravity single-account 503 backoff: waiting %v before retry (attempt %d)",
 			singleAccountBackoffDelay, s.SwitchCount)
-		if !sleepWithContext(ctx, singleAccountBackoffDelay) {
-			return FailoverCanceled
+		if !s.trySleep(ctx, singleAccountBackoffDelay) {
+			// 区分 ctx 取消（客户端断开）与预算耗尽
+			// 作者: mkx | 日期: 2026-03-03
+			if ctx.Err() != nil {
+				return FailoverCanceled
+			}
+			return FailoverExhausted
 		}
 		log.Printf("Antigravity single-account 503 retry: clearing failed accounts, retry %d/%d",
 			s.SwitchCount, s.MaxSwitches)
@@ -144,6 +165,16 @@ func (s *FailoverState) HandleSelectionExhausted(ctx context.Context) FailoverAc
 // 粘性会话切换账号、或上游明确标记时，将 input_tokens 转为 cache_read 计费。
 func needForceCacheBilling(hasBoundSession bool, failoverErr *service.UpstreamFailoverError) bool {
 	return hasBoundSession || (failoverErr != nil && failoverErr.ForceCacheBilling)
+}
+
+// trySleep 统一 sleep 入口：有 Budget 走预算扣减，无 Budget 退化为 sleepWithContext。
+// 返回 false 表示预算耗尽或 ctx 取消。
+// 作者: mkx | 日期: 2026-03-03
+func (s *FailoverState) trySleep(ctx context.Context, d time.Duration) bool {
+	if s.Budget != nil {
+		return s.Budget.TrySleep(ctx, d)
+	}
+	return sleepWithContext(ctx, d)
 }
 
 // sleepWithContext 等待指定时长，返回 false 表示 context 已取消。

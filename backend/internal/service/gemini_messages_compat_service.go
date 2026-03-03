@@ -32,10 +32,14 @@ import (
 
 const geminiStickySessionTTL = time.Hour
 
+// Gemini per-account 重试参数：从"深度重试"转为"快速切换"策略。
+// 每账号最多 2 次重试（共 3 次尝试），退避 500ms，总 sleep ≤ 600ms/账号。
+// 需要 3 次尝试以覆盖两阶段签名降级：初始请求 + stage1 + stage2。
+// 作者: mkx | 日期: 2026-03-03
 const (
-	geminiMaxRetries     = 5
-	geminiRetryBaseDelay = 1 * time.Second
-	geminiRetryMaxDelay  = 16 * time.Second
+	geminiMaxRetries     = 3
+	geminiRetryBaseDelay = 500 * time.Millisecond
+	geminiRetryMaxDelay  = 500 * time.Millisecond
 )
 
 // Gemini tool calling now requires `thoughtSignature` in parts that include `functionCall`.
@@ -700,7 +704,9 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			})
 			if attempt < geminiMaxRetries {
 				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream request failed, retry %d/%d: %v", account.ID, attempt, geminiMaxRetries, err)
-				sleepGeminiBackoff(attempt)
+				if !sleepGeminiBackoff(ctx, attempt) {
+					break
+				}
 				continue
 			}
 			setOpsUpstreamError(c, 0, safeErr, "")
@@ -757,8 +763,18 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				if txErr == nil {
 					logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: detected signature-related 400, retrying with downgraded Claude blocks (%s)", account.ID, stageName)
 					geminiReq = retryGeminiReq
-					// Consume one retry budget attempt and continue with the updated request payload.
-					sleepGeminiBackoff(1)
+					// 消耗一次重试预算后继续；预算耗尽或 ctx 取消时停止重试。
+					// 作者: mkx | 日期: 2026-03-03
+					if !sleepGeminiBackoff(ctx, 1) {
+						// 预算耗尽或 ctx 取消，恢复已消费的 resp body 后终止重试。
+						// 作者: mkx | 日期: 2026-03-03
+						resp = &http.Response{
+							StatusCode: http.StatusBadRequest,
+							Header:     resp.Header.Clone(),
+							Body:       io.NopCloser(bytes.NewReader(respBody)),
+						}
+						break
+					}
 					continue
 				}
 			}
@@ -823,7 +839,15 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				})
 
 				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, attempt, geminiMaxRetries)
-				sleepGeminiBackoff(attempt)
+				if !sleepGeminiBackoff(ctx, attempt) {
+					// 预算耗尽，提前终止重试；surface upstream error body
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 				continue
 			}
 			// Final attempt: surface the upstream error body (mapped below) instead of a generic retry error.
@@ -836,6 +860,11 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		break
+	}
+	// 预算耗尽或首轮请求即失败时 resp 可能为 nil，提前返回避免空指针 panic。
+	// 作者: mkx | 日期: 2026-03-03
+	if resp == nil {
+		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed (retry budget exhausted)")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1199,7 +1228,9 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 			})
 			if attempt < geminiMaxRetries {
 				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream request failed, retry %d/%d: %v", account.ID, attempt, geminiMaxRetries, err)
-				sleepGeminiBackoff(attempt)
+				if !sleepGeminiBackoff(ctx, attempt) {
+					break
+				}
 				continue
 			}
 			if action == "countTokens" {
@@ -1268,7 +1299,15 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				})
 
 				logger.LegacyPrintf("service.gemini_messages_compat", "Gemini account %d: upstream status %d, retry %d/%d", account.ID, resp.StatusCode, attempt, geminiMaxRetries)
-				sleepGeminiBackoff(attempt)
+				if !sleepGeminiBackoff(ctx, attempt) {
+					// 预算耗尽，提前终止重试；surface upstream error body
+					resp = &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(respBody)),
+					}
+					break
+				}
 				continue
 			}
 			if action == "countTokens" {
@@ -1293,6 +1332,11 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		break
+	}
+	// 预算耗尽或首轮请求即失败时 resp 可能为 nil，提前返回避免空指针 panic。
+	// 作者: mkx | 日期: 2026-03-03
+	if resp == nil {
+		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Upstream request failed (retry budget exhausted)")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1552,7 +1596,11 @@ func (s *GeminiMessagesCompatService) shouldFailoverGeminiUpstreamError(statusCo
 	}
 }
 
-func sleepGeminiBackoff(attempt int) {
+// sleepGeminiBackoff 执行 Gemini 重试退避 sleep。
+// 从 context 中取 SleepBudget：有则走预算扣减（预算不足返回 false），无则退化为原 time.Sleep 行为。
+// 返回 false 表示预算耗尽或 ctx 取消，调用方应停止重试。
+// 作者: mkx | 日期: 2026-03-03
+func sleepGeminiBackoff(ctx context.Context, attempt int) bool {
 	delay := geminiRetryBaseDelay * time.Duration(1<<uint(attempt-1))
 	if delay > geminiRetryMaxDelay {
 		delay = geminiRetryMaxDelay
@@ -1565,7 +1613,19 @@ func sleepGeminiBackoff(attempt int) {
 	if sleepFor < 0 {
 		sleepFor = 0
 	}
-	time.Sleep(sleepFor)
+
+	// 尝试从 context 中获取 SleepBudget
+	if budget, ok := ctx.Value(ctxkey.GeminiSleepBudget).(*SleepBudget); ok && budget != nil {
+		return budget.TrySleep(ctx, sleepFor)
+	}
+
+	// 无 budget 退化为原行为（兼容单元测试等场景）
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(sleepFor):
+		return true
+	}
 }
 
 var (

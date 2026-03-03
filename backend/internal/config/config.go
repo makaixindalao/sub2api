@@ -432,6 +432,11 @@ type GatewayConfig struct {
 	// Gemini 账户切换最大次数（Gemini 平台单独配置，因 API 限制更严格）
 	MaxAccountSwitchesGemini int `mapstructure:"max_account_switches_gemini"`
 
+	// Gemini 重试/failover 链路的 sleep 总预算（秒）。
+	// 限制 per-account 重试退避 + Handler 层同账号重试 + Antigravity 延时的累计 sleep 时间。
+	// 作者: mkx | 日期: 2026-03-03
+	GeminiRetryBudgetSeconds int `mapstructure:"gemini_retry_budget_seconds"`
+
 	// Antigravity 429 fallback 限流时间（分钟），解析重置时间失败时使用
 	AntigravityFallbackCooldownMinutes int `mapstructure:"antigravity_fallback_cooldown_minutes"`
 
@@ -1154,7 +1159,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
 	viper.SetDefault("gateway.failover_on_400", false)
 	viper.SetDefault("gateway.max_account_switches", 10)
-	viper.SetDefault("gateway.max_account_switches_gemini", 3)
+	viper.SetDefault("gateway.max_account_switches_gemini", 10)
+	viper.SetDefault("gateway.gemini_retry_budget_seconds", 5)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)

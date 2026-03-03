@@ -344,7 +344,14 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 	cleanedForUnknownBinding := false
 
-	fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+	// 注入 Gemini sleep 预算，限制整个请求链路的累计 sleep 时间
+	// 作者: mkx | 日期: 2026-03-03
+	budget := service.NewSleepBudget(h.geminiRetryBudget)
+	fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession, budget)
+	{
+		ctx := context.WithValue(c.Request.Context(), ctxkey.GeminiSleepBudget, budget)
+		c.Request = c.Request.WithContext(ctx)
+	}
 
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 	// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。

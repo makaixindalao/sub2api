@@ -52,4 +52,9 @@ const (
 	// PrefetchedStickyGroupID 标识上游预取 sticky session 时所使用的分组 ID。
 	// Service 层仅在分组匹配时复用 PrefetchedStickyAccountID，避免分组切换重试误用旧 sticky。
 	PrefetchedStickyGroupID Key = "ctx_prefetched_sticky_group_id"
+
+	// GeminiSleepBudget 携带 *service.SleepBudget，用于限制 Gemini 重试/failover 链路的累计 sleep 时间。
+	// 由 Handler 层注入，Service 层的 sleepGeminiBackoff 消费。
+	// 作者: mkx | 日期: 2026-03-03
+	GeminiSleepBudget Key = "ctx_gemini_sleep_budget"
 )
