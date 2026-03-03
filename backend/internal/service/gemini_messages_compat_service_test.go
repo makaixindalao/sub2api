@@ -508,6 +508,12 @@ func TestParseGeminiRateLimitResetTime(t *testing.T) {
 			approxDelta: -1, // 不检查精确 delta，仅检查非 nil
 		},
 		{
+			name:        "daily quota via PerDay in metadata",
+			input:       `{"error":{"details":[{"metadata":{"quota_limit":"GenerateContent-PerDay"}}]}}`,
+			wantNil:     false,
+			approxDelta: -1,
+		},
+		{
 			name:    "无 details 且无 regex 匹配",
 			input:   `{"error":{"message":"rate limit"}}`,
 			wantNil: true,
@@ -528,6 +534,25 @@ func TestParseGeminiRateLimitResetTime(t *testing.T) {
 			input:       `not json but Please retry in 10s`,
 			wantNil:     false,
 			approxDelta: 10,
+		},
+		// mkx: 新增 RetryInfo.retryDelay 解析测试 2026-02-27
+		{
+			name:        "RetryInfo.retryDelay 标准格式",
+			input:       `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"15s"}]}}`,
+			wantNil:     false,
+			approxDelta: 15,
+		},
+		{
+			name:        "RetryInfo.retryDelay 亚秒格式",
+			input:       `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0.5s"}]}}`,
+			wantNil:     false,
+			approxDelta: 1, // 向上取整 0.5 -> 1
+		},
+		{
+			name:        "RetryInfo.retryDelay 优先于 quotaResetDelay",
+			input:       `{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"5s"},{"metadata":{"quotaResetDelay":"300s"}}]}}`,
+			wantNil:     false,
+			approxDelta: 5, // retryDelay 5s 优先，而非 quotaResetDelay 300s
 		},
 	}
 
@@ -561,6 +586,91 @@ func TestParseGeminiRateLimitResetTime(t *testing.T) {
 			if delta < tt.approxDelta-2 || delta > tt.approxDelta+2 {
 				t.Errorf("期望 delta 约为 %d 秒（+/-2），实际 delta = %d 秒（返回值=%d, now=%d）",
 					tt.approxDelta, delta, *got, now)
+			}
+		})
+	}
+}
+
+// mkx: 新增 looksLikeGeminiDailyQuota 和 looksLikeGeminiMinuteQuota 独立测试 2026-02-27
+func TestLooksLikeGeminiDailyQuota(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "error.message 包含 per day",
+			body: `{"error":{"message":"Resource has been exhausted (e.g. check quota). Quota exceeded for quota metric 'Generate Content API requests per day'"}}`,
+			want: true,
+		},
+		{
+			name: "metadata.quota_limit 包含 PerDay",
+			body: `{"error":{"message":"Resource exhausted","details":[{"metadata":{"quota_limit":"GenerateContent-PerDay","quota_limit_value":"50"}}]}}`,
+			want: true,
+		},
+		{
+			name: "metadata.quota_limit 包含 PerMinute → 不是每日",
+			body: `{"error":{"message":"Resource exhausted","details":[{"metadata":{"quota_limit":"GenerateContent-PerMinute-PerProject","quota_limit_value":"15"}}]}}`,
+			want: false,
+		},
+		{
+			name: "无相关关键词",
+			body: `{"error":{"message":"rate limited","code":429}}`,
+			want: false,
+		},
+		{
+			name: "空 body",
+			body: `{}`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := looksLikeGeminiDailyQuota([]byte(tt.body))
+			if got != tt.want {
+				t.Errorf("looksLikeGeminiDailyQuota() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLooksLikeGeminiMinuteQuota(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "metadata.quota_limit 包含 PerMinute",
+			body: `{"error":{"details":[{"metadata":{"quota_limit":"GenerateContent-PerMinute-PerProject"}}]}}`,
+			want: true,
+		},
+		{
+			name: "error.message 包含 per minute",
+			body: `{"error":{"message":"Quota exceeded for quota metric 'Generate Content API requests per minute'"}}`,
+			want: true,
+		},
+		{
+			name: "error.message 包含 per_minute",
+			body: `{"error":{"message":"rate limit per_minute exceeded"}}`,
+			want: true,
+		},
+		{
+			name: "metadata.quota_limit 包含 PerDay → 不是分钟级",
+			body: `{"error":{"details":[{"metadata":{"quota_limit":"GenerateContent-PerDay"}}]}}`,
+			want: false,
+		},
+		{
+			name: "无相关关键词",
+			body: `{"error":{"message":"rate limited","code":429}}`,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := looksLikeGeminiMinuteQuota([]byte(tt.body))
+			if got != tt.want {
+				t.Errorf("looksLikeGeminiMinuteQuota() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -2711,14 +2711,25 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 			ra = time.Now().Add(cooldown)
 			logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (Code Assist, tier=%s, project=%s) rate limited, cooldown=%v", account.ID, tierID, projectID, time.Until(ra).Truncate(time.Second))
 		} else {
-			// API Key / AI Studio OAuth: PST 午夜
-			if ts := nextGeminiDailyResetUnix(); ts != nil {
-				ra = time.Unix(*ts, 0)
-				logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (API Key/AI Studio, type=%s) rate limited, reset at PST midnight (%v)", account.ID, account.Type, ra)
+			// API Key / AI Studio OAuth
+			// mkx: 区分 RPM/RPD，避免分钟级限额被冻结到 PST 午夜 2026-02-27
+			if looksLikeGeminiDailyQuota(body) {
+				// 明确的每日配额 → PST 午夜
+				if ts := nextGeminiDailyResetUnix(); ts != nil {
+					ra = time.Unix(*ts, 0)
+					logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (API Key/AI Studio, type=%s) daily quota exhausted, reset at PST midnight (%v)", account.ID, account.Type, ra)
+				} else {
+					ra = time.Now().Add(5 * time.Minute)
+					logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d rate limited, fallback to 5min", account.ID)
+				}
 			} else {
-				// 兜底：5 分钟
-				ra = time.Now().Add(5 * time.Minute)
-				logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d rate limited, fallback to 5min", account.ID)
+				// 分钟级配额或未知类型 → 层级冷却（与 Code Assist 相同逻辑）
+				cooldown := geminiCooldownForTier(tierID)
+				if s.rateLimitService != nil {
+					cooldown = s.rateLimitService.GeminiCooldown(ctx, account)
+				}
+				ra = time.Now().Add(cooldown)
+				logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (API Key/AI Studio, type=%s) minute/unknown quota, cooldown=%v", account.ID, account.Type, time.Until(ra).Truncate(time.Second))
 			}
 		}
 		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
@@ -2734,32 +2745,48 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 
 // ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳
 func ParseGeminiRateLimitResetTime(body []byte) *int64 {
-	// 第一阶段：gjson 结构化提取
-	errMsg := gjson.GetBytes(body, "error.message").String()
-	if looksLikeGeminiDailyQuota(errMsg) {
+	// 第一阶段：检查是否为每日配额
+	if looksLikeGeminiDailyQuota(body) {
 		if ts := nextGeminiDailyResetUnix(); ts != nil {
 			return ts
 		}
 	}
 
-	// 遍历 error.details 查找 quotaResetDelay
-	var found *int64
+	// 遍历 error.details 查找 google.rpc.RetryInfo.retryDelay（优先）和 quotaResetDelay
+	// mkx: 增加 RetryInfo.retryDelay 解析，RPM 429 常携带此字段 2026-02-27
+	var retryDelayFound *int64
+	var quotaResetFound *int64
 	gjson.GetBytes(body, "error.details").ForEach(func(_, detail gjson.Result) bool {
-		v := detail.Get("metadata.quotaResetDelay").String()
-		if v == "" {
-			return true
+		// RetryInfo.retryDelay — Google gRPC 标准字段，语义更明确
+		if detail.Get("@type").String() == "type.googleapis.com/google.rpc.RetryInfo" {
+			v := detail.Get("retryDelay").String()
+			if v != "" {
+				if dur, err := time.ParseDuration(v); err == nil {
+					ts := time.Now().Unix() + int64(math.Ceil(dur.Seconds()))
+					retryDelayFound = &ts
+				}
+			}
 		}
-		if dur, err := time.ParseDuration(v); err == nil {
-			// Use ceil to avoid undercounting fractional seconds (e.g. 10.1s should not become 10s),
-			// which can affect scheduling decisions around thresholds (like 10s).
-			ts := time.Now().Unix() + int64(math.Ceil(dur.Seconds()))
-			found = &ts
-			return false
+		// quotaResetDelay — Gemini 自定义 metadata 字段
+		if quotaResetFound == nil {
+			v := detail.Get("metadata.quotaResetDelay").String()
+			if v != "" {
+				if dur, err := time.ParseDuration(v); err == nil {
+					// Use ceil to avoid undercounting fractional seconds (e.g. 10.1s should not become 10s),
+					// which can affect scheduling decisions around thresholds (like 10s).
+					ts := time.Now().Unix() + int64(math.Ceil(dur.Seconds()))
+					quotaResetFound = &ts
+				}
+			}
 		}
 		return true
 	})
-	if found != nil {
-		return found
+	// RetryInfo.retryDelay 优先于 quotaResetDelay
+	if retryDelayFound != nil {
+		return retryDelayFound
+	}
+	if quotaResetFound != nil {
+		return quotaResetFound
 	}
 
 	// 第二阶段：regex 回退匹配 "Please retry in Xs"
@@ -2773,12 +2800,46 @@ func ParseGeminiRateLimitResetTime(body []byte) *int64 {
 	return nil
 }
 
-func looksLikeGeminiDailyQuota(message string) bool {
-	m := strings.ToLower(message)
-	if strings.Contains(m, "per day") || strings.Contains(m, "requests per day") || strings.Contains(m, "quota") && strings.Contains(m, "per day") {
+// looksLikeGeminiDailyQuota 检查 429 响应体是否明确指示每日配额耗尽
+// mkx: 增加 quota_limit PerDay 检测，提高每日配额识别准确度 2026-02-27
+func looksLikeGeminiDailyQuota(body []byte) bool {
+	// 检查 error.message
+	m := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	if strings.Contains(m, "per day") {
 		return true
 	}
-	return false
+	// 检查 error.details[].metadata.quota_limit 是否包含 PerDay
+	var found bool
+	gjson.GetBytes(body, "error.details").ForEach(func(_, detail gjson.Result) bool {
+		ql := detail.Get("metadata.quota_limit").String()
+		if strings.Contains(ql, "PerDay") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// looksLikeGeminiMinuteQuota 检查 429 响应体是否指示每分钟配额（RPM）
+// mkx: 新增函数，区分 RPM 和 RPD 避免分钟级限额被误判为每日配额 2026-02-27
+func looksLikeGeminiMinuteQuota(body []byte) bool {
+	// 检查 error.details[].metadata.quota_limit 是否包含 PerMinute
+	var found bool
+	gjson.GetBytes(body, "error.details").ForEach(func(_, detail gjson.Result) bool {
+		ql := detail.Get("metadata.quota_limit").String()
+		if strings.Contains(ql, "PerMinute") {
+			found = true
+			return false
+		}
+		return true
+	})
+	if found {
+		return true
+	}
+	// 检查 error.message
+	m := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	return strings.Contains(m, "per minute") || strings.Contains(m, "per_minute")
 }
 
 func nextGeminiDailyResetUnix() *int64 {
