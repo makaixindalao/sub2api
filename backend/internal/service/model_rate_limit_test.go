@@ -134,7 +134,7 @@ func TestIsModelRateLimited(t *testing.T) {
 				},
 			},
 			requestedModel: "gemini-3-pro-preview",
-			expected:       false, // gemini 平台不走 antigravity 映射
+			expected:       false, // gemini 平台使用分级限流 scope (gemini_pro)，而非直接模型名
 		},
 		{
 			name: "antigravity platform - claude-opus-4-5-thinking mapped to opus-4-6-thinking",
@@ -163,6 +163,207 @@ func TestIsModelRateLimited(t *testing.T) {
 				},
 			},
 			requestedModel: "claude-3-5-sonnet-20241022",
+			expected:       false,
+		},
+		// --- Gemini 分级限流测试 ---
+		// 作者: mkx | 日期: 2026-03-04
+		{
+			name: "gemini AI Studio - flash rate limited, request flash → blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"oauth_type": "ai_studio",
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.0-flash",
+			expected:       true,
+		},
+		{
+			name: "gemini AI Studio - flash rate limited, request pro → not blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"oauth_type": "ai_studio",
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.5-pro",
+			expected:       false,
+		},
+		{
+			name: "gemini AI Studio - pro rate limited, request flash → not blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"oauth_type": "ai_studio",
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_pro": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.0-flash-lite",
+			expected:       false,
+		},
+		{
+			name: "gemini Google One - flash rate limited, request pro → not blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"oauth_type": "google_one",
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.5-pro",
+			expected:       false,
+		},
+		{
+			name: "gemini Code Assist - does NOT use tiered rate limit",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeOAuth,
+				Credentials: map[string]any{
+					"oauth_type":  "code_assist",
+					"project_id":  "my-project",
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.0-flash",
+			expected:       false, // Code Assist 不走分级限流，scope gemini_flash 不生效
+		},
+		{
+			name: "gemini API Key - flash rate limited, request flash → blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeAPIKey,
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "gemini-2.0-flash",
+			expected:       true,
+		},
+		// --- Gemini 分级限流 + model_mapping 测试 ---
+		// 修复：映射前模型名（如 claude-haiku）应基于映射后上游模型判定 tier
+		// 作者: mkx | 日期: 2026-03-04
+		{
+			name: "gemini API Key with mapping - claude-haiku → gemini-2.0-flash, flash limited → blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"claude-haiku": "gemini-2.0-flash",
+					},
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-haiku",
+			expected:       true,
+		},
+		{
+			name: "gemini API Key with mapping - claude-haiku → gemini-2.0-flash, pro limited → not blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"claude-haiku": "gemini-2.0-flash",
+					},
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_pro": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-haiku",
+			expected:       false,
+		},
+		{
+			name: "gemini API Key with mapping - claude-sonnet → gemini-2.5-pro, pro limited → blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"claude-sonnet": "gemini-2.5-pro",
+					},
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_pro": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-sonnet",
+			expected:       true,
+		},
+		{
+			name: "gemini API Key with mapping - claude-sonnet → gemini-2.5-pro, flash limited → not blocked",
+			account: &Account{
+				Platform: PlatformGemini,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"model_mapping": map[string]any{
+						"claude-sonnet": "gemini-2.5-pro",
+					},
+				},
+				Extra: map[string]any{
+					modelRateLimitsKey: map[string]any{
+						"gemini_flash": map[string]any{
+							"rate_limit_reset_at": future,
+						},
+					},
+				},
+			},
+			requestedModel: "claude-sonnet",
 			expected:       false,
 		},
 	}
