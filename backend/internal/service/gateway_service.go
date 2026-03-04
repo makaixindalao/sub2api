@@ -1512,8 +1512,14 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		for len(available) > 0 {
 			// 1. 取优先级最小的集合
 			candidates := filterByMinPriority(available)
-			// 2. 取负载率最低的集合
-			candidates = filterByMinLoadRate(candidates)
+			// 2. 取负载最低的集合
+			if preferOAuth {
+				// Gemini: 按绝对并发数，优先选无并发的账号
+				candidates = filterByMinConcurrency(candidates)
+			} else {
+				// Claude 等: 按负载率百分比
+				candidates = filterByMinLoadRate(candidates)
+			}
 			// 3. LRU 选择最久未用的账号
 			selected := selectByLRU(candidates, preferOAuth)
 			if selected == nil {
@@ -2133,6 +2139,27 @@ func filterByMinLoadRate(accounts []accountWithLoad) []accountWithLoad {
 	result := make([]accountWithLoad, 0, len(accounts))
 	for _, acc := range accounts {
 		if acc.loadInfo.LoadRate == minLoadRate {
+			result = append(result, acc)
+		}
+	}
+	return result
+}
+
+// filterByMinConcurrency 过滤出当前并发数最少的账号集合
+// mkx: 2026-03-04 Gemini 平台按绝对并发数排序，优先选无并发的账号
+func filterByMinConcurrency(accounts []accountWithLoad) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	minConcurrency := accounts[0].loadInfo.CurrentConcurrency
+	for _, acc := range accounts[1:] {
+		if acc.loadInfo.CurrentConcurrency < minConcurrency {
+			minConcurrency = acc.loadInfo.CurrentConcurrency
+		}
+	}
+	result := make([]accountWithLoad, 0, len(accounts))
+	for _, acc := range accounts {
+		if acc.loadInfo.CurrentConcurrency == minConcurrency {
 			result = append(result, acc)
 		}
 	}

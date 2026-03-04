@@ -99,6 +99,68 @@ func TestFilterByMinLoadRate(t *testing.T) {
 	})
 }
 
+func TestFilterByMinConcurrency(t *testing.T) {
+	t.Run("empty slice", func(t *testing.T) {
+		result := filterByMinConcurrency(nil)
+		require.Empty(t, result)
+	})
+
+	t.Run("single account", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 3}},
+		}
+		result := filterByMinConcurrency(accounts)
+		require.Len(t, result, 1)
+		require.Equal(t, int64(1), result[0].account.ID)
+	})
+
+	t.Run("multiple accounts same concurrency", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 2}},
+			{account: &Account{ID: 2}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 2}},
+			{account: &Account{ID: 3}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 2}},
+		}
+		result := filterByMinConcurrency(accounts)
+		require.Len(t, result, 3)
+	})
+
+	t.Run("filters to min concurrency only", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 5}},
+			{account: &Account{ID: 2}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 1}},
+			{account: &Account{ID: 3}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 3}},
+			{account: &Account{ID: 4}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 1}},
+		}
+		result := filterByMinConcurrency(accounts)
+		require.Len(t, result, 2)
+		require.Equal(t, int64(2), result[0].account.ID)
+		require.Equal(t, int64(4), result[1].account.ID)
+	})
+
+	t.Run("zero concurrency preferred", func(t *testing.T) {
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 0}},
+			{account: &Account{ID: 2}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 3}},
+			{account: &Account{ID: 3}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 0}},
+		}
+		result := filterByMinConcurrency(accounts)
+		require.Len(t, result, 2)
+		require.Equal(t, int64(1), result[0].account.ID)
+		require.Equal(t, int64(3), result[1].account.ID)
+	})
+
+	t.Run("different max concurrency same absolute count prefers idle", func(t *testing.T) {
+		// 核心场景：账号A 1/5并发，账号B 1/3并发，LoadRate不同但绝对并发相同
+		// filterByMinConcurrency 应该同时选出两者
+		accounts := []accountWithLoad{
+			{account: &Account{ID: 1}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 1, LoadRate: 20}},
+			{account: &Account{ID: 2}, loadInfo: &AccountLoadInfo{CurrentConcurrency: 1, LoadRate: 33}},
+		}
+		result := filterByMinConcurrency(accounts)
+		require.Len(t, result, 2, "same absolute concurrency should keep both")
+	})
+}
+
 func TestSelectByLRU(t *testing.T) {
 	now := time.Now()
 	earlier := now.Add(-1 * time.Hour)
