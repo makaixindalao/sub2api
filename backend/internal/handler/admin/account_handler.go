@@ -628,6 +628,7 @@ func (h *AccountHandler) Delete(c *gin.Context) {
 // TestAccountRequest represents the request body for testing an account
 type TestAccountRequest struct {
 	ModelID string `json:"model_id"`
+	Prompt  string `json:"prompt"`
 }
 
 type SyncFromCRSRequest struct {
@@ -666,7 +667,7 @@ func (h *AccountHandler) Test(c *gin.Context) {
 	}
 
 	// Use AccountTestService to test the account with SSE streaming
-	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID); err != nil {
+	if err := h.accountTestService.TestAccountConnection(c, accountID, req.ModelID, req.Prompt); err != nil {
 		// Error already sent via SSE, just log
 		return
 	}
@@ -871,6 +872,9 @@ func (h *AccountHandler) refreshSingleAccount(ctx context.Context, account *serv
 			log.Printf("[WARN] Failed to invalidate token cache for account %d: %v", updatedAccount.ID, invalidateErr)
 		}
 	}
+
+	// OpenAI OAuth: 刷新成功后检查并设置 privacy_mode
+	h.adminService.EnsureOpenAIPrivacy(ctx, updatedAccount)
 
 	return updatedAccount, "", nil
 }
