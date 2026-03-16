@@ -845,7 +845,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 			}
 			if resp.StatusCode == 429 {
 				// Mark as rate-limited early so concurrent requests avoid this account.
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -915,7 +915,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 				}
 				return nil, s.writeGeminiMappedError(c, account, http.StatusInternalServerError, upstreamReqID, respBody)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 				upstreamReqID := resp.Header.Get(requestIDHeader)
 				if upstreamReqID == "" {
 					upstreamReqID = resp.Header.Get("x-goog-request-id")
@@ -945,7 +945,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -1305,7 +1305,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				break
 			}
 			if resp.StatusCode == 429 {
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 			}
 			if attempt < geminiMaxRetries {
 				upstreamReqID := resp.Header.Get(requestIDHeader)
@@ -1415,7 +1415,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 				c.Data(http.StatusInternalServerError, contentType, respBody)
 				return nil, fmt.Errorf("gemini upstream error: %d (skipped by error policy)", resp.StatusCode)
 			case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+				s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 				evBody := unwrapIfNeeded(isOAuth, respBody)
 				upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(evBody))
 				upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1442,7 +1442,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 
 		// ErrorPolicyNone → 原有逻辑
-		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody, originalModel)
+		s.handleGeminiUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
 		// 精确匹配服务端配置类 400 错误，触发 failover + 临时封禁
 		if resp.StatusCode == http.StatusBadRequest {
 			msg400 := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(respBody)))
@@ -2775,11 +2775,7 @@ func asInt(v any) (int, bool) {
 	}
 }
 
-// handleGeminiUpstreamError 处理 Gemini 上游错误并设置限流。
-// requestedModel 用于分级限流：非 Code Assist 账号按 Flash/Pro 独立设置限流，
-// Code Assist 或 model 为空时使用全局限流。
-// 作者: mkx | 日期: 2026-03-04
-func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string) {
+func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, body []byte) {
 	// 遵守自定义错误码策略：未命中则跳过所有限流处理
 	if !account.ShouldHandleErrorCode(statusCode) {
 		return
@@ -2831,31 +2827,15 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 				logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (API Key/AI Studio, type=%s) minute/unknown quota, cooldown=%v", account.ID, account.Type, time.Until(ra).Truncate(time.Second))
 			}
 		}
-		_ = s.setGeminiRateLimit(ctx, account, requestedModel, ra)
+		_ = s.accountRepo.SetRateLimited(ctx, account.ID, ra)
 		return
 	}
 
 	// 使用解析到的重置时间
 	resetTime := time.Unix(*resetAt, 0)
-	_ = s.setGeminiRateLimit(ctx, account, requestedModel, resetTime)
+	_ = s.accountRepo.SetRateLimited(ctx, account.ID, resetTime)
 	logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d rate limited until %v (oauth_type=%s, tier=%s)",
 		account.ID, resetTime, oauthType, tierID)
-}
-
-// setGeminiRateLimit 根据账号类型设置限流：
-// 非 Code Assist 且 requestedModel 非空 → 按 Flash/Pro 分级限流；
-// 否则回退到全局限流。
-// 作者: mkx | 日期: 2026-03-04
-func (s *GeminiMessagesCompatService) setGeminiRateLimit(ctx context.Context, account *Account, requestedModel string, resetAt time.Time) error {
-	if requestedModel != "" && isGeminiPerModelQuotaAccount(account) {
-		// 必须基于映射后的上游模型名判定 tier，否则别名（如 claude-haiku → gemini-2.0-flash）
-		// 会因不含 flash/lite 而被误判为 pro，导致分级限流写入错误 scope
-		// 作者: mkx | 日期: 2026-03-04
-		mappedModel := account.GetMappedModel(requestedModel)
-		scope := "gemini_" + string(geminiModelClassFromName(mappedModel))
-		return s.accountRepo.SetModelRateLimit(ctx, account.ID, scope, resetAt)
-	}
-	return s.accountRepo.SetRateLimited(ctx, account.ID, resetAt)
 }
 
 // ParseGeminiRateLimitResetTime 解析 Gemini 格式的 429 响应，返回重置时间的 Unix 时间戳

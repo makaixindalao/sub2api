@@ -313,7 +313,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 					handleErrorCalled = false
 					goto verify
 				case ErrorPolicyMatched, ErrorPolicyTempUnscheduled:
-					svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "")
+					svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
 					handleErrorCalled = true
 					gotFailover = true
 					goto verify
@@ -321,7 +321,7 @@ func TestGeminiErrorPolicyIntegration(t *testing.T) {
 			}
 
 			// ErrorPolicyNone → original logic
-			svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody, "")
+			svc.handleGeminiUpstreamError(ctx, account, statusCode, headers, respBody)
 			handleErrorCalled = true
 			if svc.shouldFailoverGeminiUpstreamError(statusCode) {
 				gotFailover = true
@@ -374,131 +374,8 @@ func TestGeminiErrorPolicy_NilRateLimitService(t *testing.T) {
 
 	// handleGeminiUpstreamError should not panic with nil rateLimitService
 	require.NotPanics(t, func() {
-		svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`), "")
+		svc.handleGeminiUpstreamError(ctx, account, 500, http.Header{}, []byte(`error`))
 	})
-}
-
-// ---------------------------------------------------------------------------
-// TestGeminiTieredRateLimit — 验证 Flash/Pro 分级限流行为。
-// AI Studio / Google One / API Key 账号使用 SetModelRateLimit 按 scope 限流；
-// Code Assist 账号使用全局 SetRateLimited。
-// 作者: mkx | 日期: 2026-03-04
-// ---------------------------------------------------------------------------
-
-func TestGeminiTieredRateLimit(t *testing.T) {
-	tests := []struct {
-		name                   string
-		account                *Account
-		requestedModel         string
-		expectModelRateLimit   bool
-		expectGlobalRateLimit  bool
-		expectedScope          string
-	}{
-		{
-			name: "ai_studio_flash_429_sets_gemini_flash_scope",
-			account: &Account{
-				ID:       400,
-				Type:     AccountTypeOAuth,
-				Platform: PlatformGemini,
-				Credentials: map[string]any{
-					"oauth_type": "ai_studio",
-				},
-			},
-			requestedModel:       "gemini-2.0-flash",
-			expectModelRateLimit: true,
-			expectedScope:        "gemini_flash",
-		},
-		{
-			name: "ai_studio_pro_429_sets_gemini_pro_scope",
-			account: &Account{
-				ID:       401,
-				Type:     AccountTypeOAuth,
-				Platform: PlatformGemini,
-				Credentials: map[string]any{
-					"oauth_type": "ai_studio",
-				},
-			},
-			requestedModel:       "gemini-2.5-pro",
-			expectModelRateLimit: true,
-			expectedScope:        "gemini_pro",
-		},
-		{
-			name: "google_one_flash_429_sets_gemini_flash_scope",
-			account: &Account{
-				ID:       402,
-				Type:     AccountTypeOAuth,
-				Platform: PlatformGemini,
-				Credentials: map[string]any{
-					"oauth_type": "google_one",
-				},
-			},
-			requestedModel:       "gemini-2.0-flash-lite",
-			expectModelRateLimit: true,
-			expectedScope:        "gemini_flash",
-		},
-		{
-			name: "code_assist_429_sets_global_rate_limit",
-			account: &Account{
-				ID:       403,
-				Type:     AccountTypeOAuth,
-				Platform: PlatformGemini,
-				Credentials: map[string]any{
-					"oauth_type": "code_assist",
-					"project_id": "my-project",
-				},
-			},
-			requestedModel:        "gemini-2.0-flash",
-			expectGlobalRateLimit: true,
-		},
-		{
-			name: "empty_model_falls_back_to_global_rate_limit",
-			account: &Account{
-				ID:       404,
-				Type:     AccountTypeOAuth,
-				Platform: PlatformGemini,
-				Credentials: map[string]any{
-					"oauth_type": "ai_studio",
-				},
-			},
-			requestedModel:        "",
-			expectGlobalRateLimit: true,
-		},
-		{
-			name: "apikey_flash_429_sets_gemini_flash_scope",
-			account: &Account{
-				ID:       405,
-				Type:     AccountTypeAPIKey,
-				Platform: PlatformGemini,
-			},
-			requestedModel:       "gemini-2.0-flash",
-			expectModelRateLimit: true,
-			expectedScope:        "gemini_flash",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			repo := &geminiErrorPolicyRepo{}
-			svc := &GeminiMessagesCompatService{
-				accountRepo: repo,
-			}
-
-			ctx := context.Background()
-			body := []byte(`{"error":{"code":429,"message":"Resource exhausted","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"60s"}]}}`)
-
-			svc.handleGeminiUpstreamError(ctx, tt.account, 429, http.Header{}, body, tt.requestedModel)
-
-			if tt.expectModelRateLimit {
-				require.Equal(t, 1, repo.setModelRateLimitCalls, "expected SetModelRateLimit to be called once")
-				require.Equal(t, 0, repo.setRateLimitedCalls, "expected SetRateLimited to NOT be called")
-				require.Equal(t, tt.expectedScope, repo.lastModelRateLimitScope, "wrong scope")
-			}
-			if tt.expectGlobalRateLimit {
-				require.Equal(t, 0, repo.setModelRateLimitCalls, "expected SetModelRateLimit to NOT be called")
-				require.Equal(t, 1, repo.setRateLimitedCalls, "expected SetRateLimited to be called once")
-			}
-		})
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -508,11 +385,9 @@ func TestGeminiTieredRateLimit(t *testing.T) {
 
 type geminiErrorPolicyRepo struct {
 	mockAccountRepoForGemini
-	setErrorCalls            int
-	setRateLimitedCalls      int
-	setModelRateLimitCalls   int
-	lastModelRateLimitScope  string
-	setTempCalls             int
+	setErrorCalls       int
+	setRateLimitedCalls int
+	setTempCalls        int
 }
 
 func (r *geminiErrorPolicyRepo) SetError(_ context.Context, _ int64, _ string) error {
@@ -522,12 +397,6 @@ func (r *geminiErrorPolicyRepo) SetError(_ context.Context, _ int64, _ string) e
 
 func (r *geminiErrorPolicyRepo) SetRateLimited(_ context.Context, _ int64, _ time.Time) error {
 	r.setRateLimitedCalls++
-	return nil
-}
-
-func (r *geminiErrorPolicyRepo) SetModelRateLimit(_ context.Context, _ int64, scope string, _ time.Time) error {
-	r.setModelRateLimitCalls++
-	r.lastModelRateLimitScope = scope
 	return nil
 }
 

@@ -32,17 +32,6 @@ func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedMo
 		return false
 	}
 
-	// Gemini 平台：非 Code Assist 账号使用 gemini_flash/gemini_pro 分级限流
-	// 必须基于映射后的上游模型名判定 tier，否则别名（如 claude-haiku → gemini-2.0-flash）
-	// 会因不含 flash/lite 而被误判为 pro，导致分级限流失效
-	// 作者: mkx | 日期: 2026-03-04
-	if a.Platform == PlatformGemini && isGeminiPerModelQuotaAccount(a) {
-		mappedModel := a.GetMappedModel(requestedModel)
-		modelClass := geminiModelClassFromName(mappedModel)
-		scope := "gemini_" + string(modelClass)
-		return a.isRateLimitActiveForKey(scope)
-	}
-
 	modelKey := a.GetMappedModel(requestedModel)
 	if a.Platform == PlatformAntigravity {
 		modelKey = resolveFinalAntigravityModelKey(ctx, a, requestedModel)
@@ -63,17 +52,6 @@ func (a *Account) GetModelRateLimitRemainingTime(requestedModel string) time.Dur
 func (a *Account) GetModelRateLimitRemainingTimeWithContext(ctx context.Context, requestedModel string) time.Duration {
 	if a == nil {
 		return 0
-	}
-
-	// Gemini 平台：非 Code Assist 账号使用 gemini_flash/gemini_pro 分级限流
-	// 必须基于映射后的上游模型名判定 tier，否则别名（如 claude-haiku → gemini-2.0-flash）
-	// 会因不含 flash/lite 而被误判为 pro，导致分级限流失效
-	// 作者: mkx | 日期: 2026-03-04
-	if a.Platform == PlatformGemini && isGeminiPerModelQuotaAccount(a) {
-		mappedModel := a.GetMappedModel(requestedModel)
-		modelClass := geminiModelClassFromName(mappedModel)
-		scope := "gemini_" + string(modelClass)
-		return a.getRateLimitRemainingForKey(scope)
 	}
 
 	modelKey := a.GetMappedModel(requestedModel)

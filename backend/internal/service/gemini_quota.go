@@ -397,17 +397,6 @@ func geminiQuotaTierKeyForAccount(account *Account) string {
 	}
 }
 
-// isGeminiPerModelQuotaAccount 判断 Gemini 账号是否具有按模型分级的独立配额。
-// AI Studio 和 Google One 账号的 Flash/Pro 有独立配额，应使用分级限流；
-// Code Assist 使用共享配额池，保持全局限流行为不变。
-// 作者: mkx | 日期: 2026-03-04
-func isGeminiPerModelQuotaAccount(account *Account) bool {
-	if account == nil || account.Platform != PlatformGemini {
-		return false
-	}
-	return !account.IsGeminiCodeAssist()
-}
-
 func geminiModelClassFromName(model string) geminiModelClass {
 	name := strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(name, "flash") || strings.Contains(name, "lite") {
